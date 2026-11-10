@@ -1,0 +1,92 @@
+import os
+import time
+import numpy as np
+import pandas as pd
+from astropy.io import fits
+from astropy.wcs import WCS
+
+try:
+    from astroquery.skyview import SkyView
+except ImportError:
+    !pip install astroquery
+    from astroquery.skyview import SkyView
+
+def process_fits_file(file_path, target_name):
+    start_time = time.time()
+    try:
+        with fits.open(file_path) as hdul:
+            header = hdul[0].header
+            data = hdul[0].data
+
+            mean_val = np.nanmean(data)
+            std_val = np.nanstd(data)
+            max_val = np.nanmax(data)
+
+            object_name = header.get('OBJECT', target_name)
+            ra, dec = 0.0, 0.0
+            
+            try:
+                wcs = WCS(header)
+                naxis1 = header.get('NAXIS1', data.shape[1] if data is not None else 100)
+                naxis2 = header.get('NAXIS2', data.shape[0] if data is not None else 100)
+                center_x, center_y = naxis1 / 2.0, naxis2 / 2.0
+                sky_coord = wcs.pixel_to_world(center_x, center_y)
+                ra = sky_coord.ra.deg
+                dec = sky_coord.dec.deg
+            except Exception:
+              
+                ra = header.get('RA', header.get('CRVAL1', 0.0))
+                dec = header.get('DEC', header.get('CRVAL2', 0.0))
+
+        elapsed_time = time.time() - start_time
+        return {
+            'object': object_name,
+            'ra': ra,
+            'dec': dec,
+            'mean': mean_val,
+            'std': std_val,
+            'max': max_val,
+            'processing_time_sec': elapsed_time
+        }
+    except Exception as e:
+        print(f" Error processing FITS for {target_name}: {e}")
+        return None
+
+def run_nasa_pipeline(target_name, csv_filename="pipeline_data.csv"):
+    local_file = f"{target_name.lower().replace(' ', '_')}_real.fits"
+    try:
+        print(f"Fetching data for: {target_name}...")
+        images = SkyView.get_images(position=target_name, survey=['DSS2 Blue'])
+        if len(images) > 0:
+            images[0].writeto(local_file, overwrite=True)
+            
+            metrics = process_fits_file(local_file, target_name)
+            if metrics:
+                metrics['object'] = target_name  
+                
+                df_new = pd.DataFrame([metrics])
+                file_exists = os.path.exists(csv_filename)
+                if file_exists:
+                    df_current = pd.read_csv(csv_filename)
+                    df_current = df_current[df_current['object'] != target_name]
+                    df_new = pd.concat([df_current, df_new], ignore_index=True)
+                    df_new.to_csv(csv_filename, index=False)
+                else:
+                    df_new.to_csv(csv_filename, index=False)
+                return metrics
+    except Exception as e:
+        print(f" Could not fetch {target_name} from SkyView: {e}")
+    return None
+
+if __name__ == "__main__":
+    targets = ["Orion Nebula", "Andromeda Galaxy", "Crab Nebula", "Whirlpool Galaxy"]
+    for target in targets:
+        run_nasa_pipeline(target)
+    
+    if os.path.exists("pipeline_data.csv"):
+        print("\n--- Outputs for the 4 Targets ---")
+        df_result = pd.read_csv("pipeline_data.csv")
+        try:
+            display(df_result)
+        except NameError:
+            print(df_result)
